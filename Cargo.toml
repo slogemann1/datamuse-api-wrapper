@@ -1,0 +1,12 @@
+[package]
+name = "datamuse-api-wrapper"
+version = "0.1.0"
+authors = ["slogemann1 <sllogemann1@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+reqwest = "0.10.10"
+serde = "1.0.118"
+serde_json = "1.0.60"
