@@ -1,6 +1,7 @@
 use std::fmt::{ self, Display, Formatter };
 use reqwest;
 use crate::{ DatamuseClient, Error, Result };
+use crate::response::{ Response, WordElement };
 
 /// Use this struct to build requests to send to the Datamuse api.
 /// This request can be sent either by building it into a Request with build()
@@ -9,7 +10,7 @@ use crate::{ DatamuseClient, Error, Result };
 /// and endpoint
 #[derive(Debug)]
 pub struct RequestBuilder<'a> {
-    client: &'a mut DatamuseClient,
+    client: &'a DatamuseClient,
     endpoint: EndPoint,
     vocabulary: Vocabulary,
     parameters: Vec<Parameter>,
@@ -19,7 +20,8 @@ pub struct RequestBuilder<'a> {
 
 /// This struct represents a built request that can be sent using the send() method
 #[derive(Debug)]
-pub struct Request {
+pub struct Request<'a> {
+    client: &'a reqwest::Client,
     request: reqwest::Request
 }
 
@@ -66,9 +68,9 @@ pub enum RelatedType {
     Trigger,
     /// This parameter returns antonyms for the given word
     Antonym,
-    /// This parameter returns the kind of which a more generalized word is
+    /// This parameter returns the kind of which a more specific word is
     KindOf,
-    /// This parameter returns a more specific kind the given category word (opposite of KindOf)
+    /// This parameter returns a more specific kind of the given category word (opposite of KindOf)
     MoreGeneral,
     /// This parameter returns words that describe things which the given word is comprised of
     Comprises,
@@ -296,11 +298,23 @@ impl<'a> RequestBuilder<'a> {
             .build()?;
 
         Ok(Request {
-            request
+            request,
+            client: &self.client.client
         })
     }
 
-    pub(crate) fn new(client: &'a mut DatamuseClient, vocabulary: Vocabulary, endpoint: EndPoint) -> Self {
+    /// A convenience method to build and send the request in one step. The resulting
+    /// response can be parsed with its list() method
+    pub async fn send(&self) -> Result<Response> {
+        self.build()?.send().await
+    }
+
+    /// A convenience method to build and send the request as well as parse the json in one step
+    pub async fn list(&self) -> Result<Vec<WordElement>> {
+        self.send().await?.list()
+    }
+
+    pub(crate) fn new(client: &'a DatamuseClient, vocabulary: Vocabulary, endpoint: EndPoint) -> Self {
         RequestBuilder {
             client,
             endpoint,
@@ -309,6 +323,18 @@ impl<'a> RequestBuilder<'a> {
             topics: Vec::new(),
             meta_data_flags: Vec::new()
         }
+    }
+}
+
+impl<'a> Request<'a> {
+    /// Sends the built request and returns the response. This response can later be parsed with its
+    /// list() method
+    pub async fn send(self) -> Result<Response> {
+        let json = self.client.execute(self.request)
+            .await?
+            .text()
+            .await?;
+        Ok(Response::new(json))
     }
 }
 
@@ -428,7 +454,7 @@ impl RelatedTypeHolder {
             RelatedType::Follower => String::from("bga"),
             RelatedType::Predecessor => String::from("bgb"),
             RelatedType::Rhyme => String::from("rhy"),
-            RelatedType::ApproximateRhyme => String::from("nhy"),
+            RelatedType::ApproximateRhyme => String::from("nry"),
             RelatedType::Homophones => String::from("hom"),
             RelatedType::ConsonantMatch => String::from("cns")
         }
@@ -467,5 +493,228 @@ impl Vocabulary {
             Vocabulary::EnglishWiki => Some((String::from("v"), String::from("enwiki"))),
             Vocabulary::English => None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{ DatamuseClient, Vocabulary, EndPoint, RelatedType, MetaDataFlag, PronunciationFormat };
+
+    #[test]
+    fn means_like_and_sounds_like() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .means_like("cap")
+            .sounds_like("flat");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?ml=cap&sl=flat",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn left_context_and_spelled_like() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .left_context("drink")
+            .spelled_like("w*");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?lc=drink&sp=w*",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn right_context_and_max_results() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .right_context("food")
+            .max_results(500);
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rc=food&max=500",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn topics_and_sounds_like() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .add_topic("color")
+            .sounds_like("clue")
+            .add_topic("sad");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?sl=clue&topics=color%2Csad", //%2C = ','
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn suggest_endpoint() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Suggest)
+            .hint_string("hel")
+            .max_results(20);
+        
+        assert_eq!(
+            "https://api.datamuse.com/sug?s=hel&max=20",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn suggest_endpoint_fail() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Suggest)
+            .add_topic("color");
+        request.build().unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn words_endpoint_fail() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .add_topic("color")
+            .hint_string("blu");
+        request.build().unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn spanish_vocabulary_fail() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::Spanish, EndPoint::Words)
+            .related(RelatedType::Trigger, "frutas")
+            .sounds_like("manta");
+
+        request.build().unwrap();
+    }
+    
+    #[test]
+    fn noun_and_adjective_modifiers() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::AdjectiveModifier, "food")
+            .related(RelatedType::NounModifiedBy, "fresh");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rel_jjb=food&rel_jja=fresh",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+    
+    #[test]
+    fn synonyms_and_triggers() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::Synonym, "grass")
+            .related(RelatedType::Trigger, "cow");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rel_syn=grass&rel_trg=cow",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn antonyms_and_consonant_match() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::Antonym, "good")
+            .related(RelatedType::ConsonantMatch, "bed");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rel_ant=good&rel_cns=bed",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn kind_of_and_more_general() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::KindOf, "wagon")
+            .related(RelatedType::MoreGeneral, "vehicle");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rel_spc=wagon&rel_gen=vehicle",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn comprises_and_part_of() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::Comprises, "car")
+            .related(RelatedType::PartOf, "glass");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rel_com=car&rel_par=glass",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn follows_and_precedes() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::Follower, "soda")
+            .related(RelatedType::Predecessor, "drink");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rel_bga=soda&rel_bgb=drink",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn both_rhymes_and_homophones() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::Rhyme, "cat")
+            .related(RelatedType::Homophones, "mate")
+            .related(RelatedType::ApproximateRhyme, "fate");
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rel_rhy=cat&rel_hom=mate&rel_nry=fate",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn all_meta_data_flags() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::Trigger, "cow")
+            .meta_data(MetaDataFlag::Definitions)
+            .meta_data(MetaDataFlag::PartsOfSpeech)
+            .meta_data(MetaDataFlag::SyllableCount)
+            .meta_data(MetaDataFlag::WordFrequency)
+            .meta_data(MetaDataFlag::Pronunciation(PronunciationFormat::Arpabet));
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?rel_trg=cow&md=dpsfr",
+            request.build().unwrap().request.url().as_str()
+        );
+    }
+
+    #[test]
+    fn pronunciation_ipa() {
+        let client = DatamuseClient::new();
+        let request = client.new_query(Vocabulary::English, EndPoint::Words)
+            .related(RelatedType::Trigger, "soda")
+            .meta_data(MetaDataFlag::Pronunciation(PronunciationFormat::Ipa));
+        
+        assert_eq!(
+            "https://api.datamuse.com/words?ipa=1&rel_trg=soda&md=r",
+            request.build().unwrap().request.url().as_str()
+        );
     }
 }
