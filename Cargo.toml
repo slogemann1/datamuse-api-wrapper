@@ -7,7 +7,7 @@ description = "A wrapper library for the Datamuse api"
 license = "MIT"
 repository = "https://github.com/slogemann1/datamuse-api-wrapper"
 readme = "README.md"
-keywords = ["word", "english", "autocomplete", "api"]
+keywords = ["word", "english", "autocomplete", "api", "datamuse"]
 categories = ["api-bindings"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
